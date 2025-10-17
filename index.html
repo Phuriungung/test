@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Quick Ward Note — Notify</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>Quick Ward Note</h1>
+    <div class="sub">Fast template for bedside updates</div>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>Patient</h2>
+      <div class="row">
+        <label>Bed/Room
+          <input id="bed" placeholder="e.g., กว6/1 รวม3" />
+        </label>
+        <label>Name
+          <input id="name" placeholder="e.g., อัครเดช" />
+        </label>
+      </div>
+      <label>Hashtags / Dx (multiline)
+        <textarea id="hashtags" rows="6" placeholder="CCA c HCV cirrhosis S/P Rt. hepatectomy&#10;U/D HT"></textarea>
+      </label>
+    </section>
+
+    <section class="card">
+  <h2>Clinical (Cli)</h2>
+  <textarea id="cli" rows="8" placeholder="สรุปอาการ: ..."></textarea>
+    </section>
+
+    <section class="card">
+      <h2>Mx</h2>
+      <textarea id="mx" rows="3" placeholder="แผนการรักษา / Management..."></textarea>
+    </section>
+
+    <section class="card">
+      <h2>V/S</h2>
+      <div class="grid vs">
+        <label>BT <input id="bt" inputmode="decimal" placeholder="36.9" /></label>
+        <label>PR <input id="pr" inputmode="numeric" placeholder="74" /></label>
+        <label>RR <input id="rr" inputmode="numeric" placeholder="18" /></label>
+        <label>BP <input id="bp" placeholder="143/75" /></label>
+        <label>O2sat <input id="o2" inputmode="numeric" placeholder="96%" /></label>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>I/O เช้า</h2>
+      <div class="io-block" data-block="morning">
+        <div class="row between"><div class="tag">I</div><button class="add" data-kind="in">+ add</button></div>
+        <div class="lines in"></div>
+        <div class="quick-add-row" data-kind="in">
+          <input class="quick-add" placeholder="Quick add I: oral 800, นม 300, ivf 800 (Enter)" />
+        </div>
+        <div class="row between"><div class="tag">O</div><button class="add" data-kind="out">+ add</button></div>
+        <div class="lines out"></div>
+        <div class="quick-add-row" data-kind="out">
+          <input class="quick-add" placeholder="Quick add O: urine 600+ท1, drain 700 (Enter)" />
+        </div>
+        <div class="override">
+          <div class="tag">Override totals (optional)</div>
+          <div class="row">
+            <label>I <input class="override-in" inputmode="decimal" placeholder="e.g., 1960" /></label>
+            <label>O <input class="override-out" inputmode="decimal" placeholder="e.g., 1300" /></label>
+          </div>
+        </div>
+        <div class="totals">Total: <span class="sum-in">0</span>/<span class="sum-out">0</span> (<span class="net">0</span>)</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>I/O บ่าย</h2>
+      <div class="io-block" data-block="afternoon">
+        <div class="row between"><div class="tag">I</div><button class="add" data-kind="in">+ add</button></div>
+        <div class="lines in"></div>
+        <div class="quick-add-row" data-kind="in">
+          <input class="quick-add" placeholder="Quick add I: oral 450, ivf 792 (Enter)" />
+        </div>
+        <div class="row between"><div class="tag">O</div><button class="add" data-kind="out">+ add</button></div>
+        <div class="lines out"></div>
+        <div class="quick-add-row" data-kind="out">
+          <input class="quick-add" placeholder="Quick add O: urine 200, drain 980 (Enter)" />
+        </div>
+        <div class="override">
+          <div class="tag">Override totals (optional)</div>
+          <div class="row">
+            <label>I <input class="override-in" inputmode="decimal" placeholder="e.g., 1242" /></label>
+            <label>O <input class="override-out" inputmode="decimal" placeholder="e.g., 1180" /></label>
+          </div>
+        </div>
+        <div class="totals">Total: <span class="sum-in">0</span>/<span class="sum-out">0</span> (<span class="net">0</span>)</div>
+      </div>
+    </section>
+
+    <section class="actions">
+      <label class="live-toggle"><input type="checkbox" id="live" checked /> Live update</label>
+      <button id="gen">Generate Note</button>
+      <button id="copy">Copy</button>
+      <button id="reset" class="ghost">Reset</button>
+    </section>
+
+    <section class="card">
+      <h2>Preview</h2>
+      <pre id="output" class="preview" contenteditable="true" spellcheck="false"></pre>
+    </section>
+  </main>
+
+  
+
+  <script src="app.js"></script>
+</body>
+</html>
