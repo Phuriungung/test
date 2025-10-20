@@ -1,6 +1,10 @@
 // Quick Ward Note — core logic
 (function(){
   const $$ = sel => document.querySelector(sel);
+  let lastSegments = null; // snapshot of last generated segments used in preview merge
+  const STORAGE_KEY = 'notify-profiles-v1';
+  let profiles = {}; // id -> data
+  let currentProfileId = null;
 
   const ioBlocks = {
     morning: { in: [], out: [] },
@@ -25,12 +29,14 @@
   function addIOLine(container, kind){
     const line = el('div', { class: 'io-line' });
     const kindInput = el('input', { class: 'kind', placeholder: kind === 'in' ? 'oral / ivf / นม / ...' : 'urine / drain / ...' });
-    const amount = el('input', { class: 'amount', inputmode: 'decimal', placeholder: '0' });
+    const displayInput = el('input', { class: 'display', placeholder: 'e.g., 500+ท1' });
+    const amount = el('input', { class: 'amount', inputmode: 'decimal', placeholder: '500' });
     const rm = el('button', { class: 'remove', onclick: ()=>{ line.remove(); recalc(container.closest('.io-block')); save(); }}, '×');
-    line.append(kindInput, amount, rm);
+    line.append(kindInput, displayInput, amount, rm);
     container.appendChild(line);
     amount.addEventListener('input', ()=>{ recalc(container.closest('.io-block')); save(); });
     kindInput.addEventListener('input', ()=> save());
+    displayInput.addEventListener('input', ()=> save());
   }
 
   function parseAmount(v){
@@ -76,6 +82,7 @@
   function gatherIO(blockEl){
     const read = cls => Array.from(blockEl.querySelectorAll(`.lines.${cls} .io-line`)).map(line=>({
       kind: line.querySelector('input.kind').value.trim(),
+      display: line.querySelector('input.display')?.value.trim() || '',
       amount: parseAmount(line.querySelector('input.amount').value)
     })).filter(x => x.kind || x.amount);
     const ov = getOverride(blockEl);
@@ -91,9 +98,8 @@
     const hasDigits = (s) => /\d/.test(s||'');
     const fmtPairs = arr => arr.map(x=> {
       const k = x.kind || '?';
-      const amt = Math.round(x.amount);
-      // If kind already contains digits (e.g., "urine 600+ท1"), don't repeat the number
-      return hasDigits(k) ? k : `${k} ${amt}`;
+      const disp = (x.display && x.display.trim()) ? x.display.trim() : `${Math.round(x.amount)}`;
+      return `${k} ${disp}`.trim();
     }).join(', ');
 
     const lines = [];
@@ -106,12 +112,12 @@
     return lines.join('\n');
   }
 
-  function generateNote(){
+  function buildSegments(){
     const bed = $$('#bed').value.trim();
     const name = $$('#name').value.trim();
     const hashtags = $$('#hashtags').value.trim();
-  const cli = $$('#cli').value.trim();
-  const mx = $$('#mx')?.value.trim();
+    const cli = $$('#cli').value.trim();
+    const mx = $$('#mx')?.value.trim();
     const vs = {
       bt: $$('#bt').value.trim(), pr: $$('#pr').value.trim(), rr: $$('#rr').value.trim(),
       bp: $$('#bp').value.trim(), o2: $$('#o2').value.trim()
@@ -137,18 +143,16 @@
     const totalOut = mOut + aOut;
     const totalNet = totalIn - totalOut;
 
-    const header = `${bed} ${name}`.trim();
-    const lines = [];
-    if(header) lines.push(header);
+    const seg = {};
+    seg.header = `${bed} ${name}`.trim();
     if(hashtags){
-      // Support multiline input; prefix each non-empty line with '#'
       const tagLines = hashtags.split(/\r?\n/)
         .map(s=> s.trim())
         .filter(Boolean)
         .map(s=> s.startsWith('#')? s : `#${s}`);
-      lines.push(tagLines.join('\n'));
-    }
-    if(cli) lines.push(`\nCli: ${cli}`);
+      seg.hashtags = tagLines.join('\n');
+    } else seg.hashtags = '';
+    seg.cli = cli ? `\nCli: ${cli}` : '';
 
     const vsParts = [];
     if(vs.bt) vsParts.push(`BT ${vs.bt}`);
@@ -156,24 +160,57 @@
     if(vs.rr) vsParts.push(`RR ${vs.rr}`);
     if(vs.bp) vsParts.push(`BP ${vs.bp}`);
     if(vs.o2) vsParts.push(`O2sat ${vs.o2.replace(/%?$/, '%')}`);
-    if(vsParts.length) lines.push(`\nV/S ${vsParts.join(' ')}`);
+    seg.vs = vsParts.length ? `\nV/S ${vsParts.join(' ')}` : '';
 
-  lines.push('\n' + formatIO('เช้า', morning));
-  lines.push('\n' + formatIO('บ่าย', afternoon));
+    seg.ioMorning = '\n' + formatIO('เช้า', morning);
+    seg.ioAfternoon = '\n' + formatIO('บ่าย', afternoon);
+    seg.total = `\nI/O รวม: ${Math.round(totalIn)}/${Math.round(totalOut)} (${totalNet>=0? '+' : ''}${Math.round(totalNet)})`;
+    seg.mx = mx ? `\nMx: ${mx}` : '';
+    return seg;
+  }
 
-  const totalLine = `\nI/O รวม: ${Math.round(totalIn)}/${Math.round(totalOut)} (${totalNet>=0? '+' : ''}${Math.round(totalNet)})`;
-    lines.push(totalLine);
-
-  if(mx) lines.push(`\nMx: ${mx}`);
-
-  const note = lines.join('\n');
-    return note
-      .replace(/\n\n\n+/g, '\n\n')
-      .trim();
+  function composeFromSegments(seg){
+    const parts = [];
+    if(seg.header) parts.push(seg.header);
+    if(seg.hashtags) parts.push(seg.hashtags);
+    if(seg.cli) parts.push(seg.cli);
+    if(seg.vs) parts.push(seg.vs);
+    if(seg.ioMorning) parts.push(seg.ioMorning);
+    if(seg.ioAfternoon) parts.push(seg.ioAfternoon);
+    if(seg.total) parts.push(seg.total);
+    if(seg.mx) parts.push(seg.mx);
+    return parts.join('\n').replace(/\n\n\n+/g, '\n\n').trim();
   }
 
   function updatePreview(){
-    $$('#output').textContent = generateNote();
+    const segNew = buildSegments();
+    const out = $$('#output');
+    let current = out.textContent || '';
+    if(!current){
+      current = composeFromSegments(segNew);
+      out.textContent = current;
+      lastSegments = segNew;
+      save();
+      return;
+    }
+    // Non-destructive: only replace previous segment outputs still present
+    let updated = current;
+    if(lastSegments){
+      const keys = ['header','hashtags','cli','vs','ioMorning','ioAfternoon','total','mx'];
+      for(const k of keys){
+        const oldSeg = lastSegments[k] || '';
+        const newSeg = segNew[k] || '';
+        if(!oldSeg) continue;
+        if(updated.includes(oldSeg)){
+          updated = updated.replace(oldSeg, newSeg);
+        }
+      }
+    } else {
+      updated = composeFromSegments(segNew);
+    }
+    out.textContent = updated;
+    lastSegments = segNew;
+    save();
   }
 
   function initIO(){
@@ -181,52 +218,11 @@
       const linesIn = block.querySelector('.lines.in');
       const linesOut = block.querySelector('.lines.out');
 
-      // start with one input and one output row
-      addIOLine(linesIn, 'in');
-      addIOLine(linesOut, 'out');
+      // start with three input and three output rows
+      for(let i=0;i<3;i++) addIOLine(linesIn, 'in');
+      for(let i=0;i<3;i++) addIOLine(linesOut, 'out');
 
-      block.querySelectorAll('button.add').forEach(btn=>{
-        btn.addEventListener('click', ()=>{
-          const kind = btn.dataset.kind;
-          addIOLine(kind==='in'? linesIn : linesOut, kind);
-          recalc(block);
-          save();
-        });
-      });
-
-      // quick add: parse comma/newline separated entries of "kind amount"
-      block.querySelectorAll('.quick-add-row').forEach(row=>{
-        const qa = row.querySelector('.quick-add');
-        const isIn = row.dataset.kind === 'in';
-        qa.addEventListener('keydown', (e)=>{
-          if(e.key === 'Enter'){
-            e.preventDefault();
-            const raw = qa.value.trim();
-            if(!raw) return;
-            const targets = isIn ? linesIn : linesOut;
-            const parts = raw.split(/[,\n]/).map(s=> s.trim()).filter(Boolean);
-            parts.forEach(p=>{
-              // choose the largest numeric token in the phrase as amount
-              // keeps the full phrase as kind (no trimming of trailing numbers)
-              // examples:
-              //  - "oral 800" => kind: "oral 800" (display preserves), amount: 800
-              //  - "drain 950+ท1" => amount: 950 (largest numeric), kind unchanged
-              //  - "urine 600+ท1 600" => amount: 600
-              let amt = 0;
-              const nums = [...p.matchAll(/-?\d+(?:[.,]\d+)?/g)].map(m=> parseFloat(m[0].replace(',', '.')));
-              if(nums.length){ amt = nums.reduce((a,b)=> Math.abs(b) > Math.abs(a) ? b : a, 0); }
-              const kind = p;
-              addIOLine(targets, isIn? 'in':'out');
-              const last = targets.lastElementChild;
-              last.querySelector('input.kind').value = kind;
-              last.querySelector('input.amount').value = amt || '';
-            });
-            qa.value = '';
-            recalc(block);
-            save();
-          }
-        });
-      });
+      // fixed number of rows; + add removed
     });
   }
 
@@ -237,16 +233,59 @@
       io: Array.from(document.querySelectorAll('.io-block')).map(block=>{
         const b = gatherIO(block);
         return b;
-      })
+      }),
+      preview: $$('#output')?.textContent || '',
+      lastSegments
     };
-    try { localStorage.setItem('notify-data', JSON.stringify(data)); } catch {}
+    try {
+      // Persist into the profiles map
+      if(!currentProfileId){
+        currentProfileId = `p-${Date.now()}`;
+      }
+      const existing = profiles[currentProfileId] || { label: 'Untitled', data: null };
+      profiles[currentProfileId] = { label: existing.label || 'Untitled', data };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ current: currentProfileId, profiles }));
+      // Also keep backwards compatible single save
+      localStorage.setItem('notify-data', JSON.stringify(data));
+      // update selector label
+      refreshProfileSelect();
+    } catch {}
   }
 
   function load(){
     try {
-      const s = localStorage.getItem('notify-data');
-      if(!s) return;
-      const data = JSON.parse(s);
+      // Load profiles
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if(raw){
+        const parsed = JSON.parse(raw);
+        profiles = parsed.profiles || {};
+        currentProfileId = parsed.current || Object.keys(profiles)[0] || null;
+      } else {
+        profiles = {};
+        currentProfileId = null;
+      }
+
+      // If no profile exists but legacy data exists, migrate into a new profile
+      let data;
+      if(!currentProfileId){
+        const legacy = localStorage.getItem('notify-data');
+        if(legacy){
+          data = JSON.parse(legacy);
+          currentProfileId = `p-${Date.now()}`;
+          profiles[currentProfileId] = { label: 'Imported', data };
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({ current: currentProfileId, profiles }));
+        } else {
+          // Create a new blank profile so first load is empty UI
+          currentProfileId = `p-${Date.now()}`;
+          data = { bed:'', name:'', hashtags:'', cli:'', mx:'', bt:'', pr:'', rr:'', bp:'', o2:'', io:[{in:[], out:[]},{in:[], out:[]}], preview:'', lastSegments:null };
+          profiles[currentProfileId] = { label: 'Untitled', data };
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({ current: currentProfileId, profiles }));
+        }
+      } else {
+        data = profiles[currentProfileId]?.data || null;
+      }
+      refreshProfileSelect();
+      if(!data) return;
       $$('#bed').value = data.bed||''; $$('#name').value = data.name||''; $$('#hashtags').value = data.hashtags||'';
   $$('#cli').value = data.cli||''; if($$('#mx')) $$('#mx').value = data.mx||''; $$('#bt').value = data.bt||''; $$('#pr').value = data.pr||''; $$('#rr').value = data.rr||''; $$('#bp').value = data.bp||''; $$('#o2').value = data.o2||'';
 
@@ -256,25 +295,57 @@
         const linesIn = block.querySelector('.lines.in');
         const linesOut = block.querySelector('.lines.out');
         linesIn.innerHTML = ''; linesOut.innerHTML = '';
-        (data.io?.[idx]?.in||[{kind:'', amount:0}]).forEach(x=>{
+        const inArr = data.io?.[idx]?.in || [];
+        const outArr = data.io?.[idx]?.out || [];
+        const inCount = Math.max(3, inArr.length || 0);
+        const outCount = Math.max(3, outArr.length || 0);
+        for(let i=0;i<inCount;i++){
           addIOLine(linesIn, 'in');
           const last = linesIn.lastElementChild;
+          const x = inArr[i] || {kind:'', display:'', amount: ''};
           last.querySelector('input.kind').value = x.kind||'';
-          last.querySelector('input.amount').value = x.amount||'';
-        });
-        (data.io?.[idx]?.out||[{kind:'', amount:0}]).forEach(x=>{
+          if(last.querySelector('input.display')) last.querySelector('input.display').value = x.display||'';
+          last.querySelector('input.amount').value = (x.amount!==undefined && x.amount!==null && x.amount!=='') ? x.amount : '';
+        }
+        for(let i=0;i<outCount;i++){
           addIOLine(linesOut, 'out');
           const last = linesOut.lastElementChild;
+          const x = outArr[i] || {kind:'', display:'', amount: ''};
           last.querySelector('input.kind').value = x.kind||'';
-          last.querySelector('input.amount').value = x.amount||'';
-        });
+          if(last.querySelector('input.display')) last.querySelector('input.display').value = x.display||'';
+          last.querySelector('input.amount').value = (x.amount!==undefined && x.amount!==null && x.amount!=='') ? x.amount : '';
+        }
       });
       recalcAll();
+      // restore preview and lastSegments
+      if(data.preview){ $$('#output').textContent = data.preview; }
+      if(data.lastSegments){ lastSegments = data.lastSegments; }
     } catch {}
   }
 
+  function refreshProfileSelect(){
+    const sel = $$('#profileSelect');
+    if(!sel) return;
+    sel.innerHTML = '';
+    const ids = Object.keys(profiles);
+    if(ids.length === 0){
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No profiles';
+      sel.appendChild(opt);
+      return;
+    }
+    ids.forEach(id=>{
+      const opt = document.createElement('option');
+      opt.value = id;
+      opt.textContent = profiles[id]?.label || id;
+      sel.appendChild(opt);
+    });
+    sel.value = currentProfileId || '';
+  }
+
   function bindActions(){
-    $$('#gen').addEventListener('click', ()=>{ updatePreview(); save(); });
+  // always live update; no generate button
     async function copyText(text){
       // Try Clipboard API first
       try {
@@ -304,7 +375,181 @@
       $$('#copy').textContent = ok ? 'Copied' : 'Copy failed';
       setTimeout(()=> $$('#copy').textContent = 'Copy', 1400);
     });
-    $$('#reset').addEventListener('click', ()=>{ localStorage.removeItem('notify-data'); location.reload(); });
+
+    // Mobile preview sheet logic
+  const sheet = document.getElementById('mobilePreviewSheet');
+  const mobileBody = document.getElementById('mobilePreviewBody');
+    const toggleBtn = document.getElementById('togglePreview');
+    const closeSheet = document.getElementById('closeSheet');
+    const copyMobile = document.getElementById('copyMobile');
+
+    function isMobile(){ return true; } // always use sheet
+    function mountPreview(){
+      let out = document.getElementById('output');
+      if(!out){
+        out = document.createElement('pre');
+        out.id = 'output';
+        out.className = 'preview';
+        out.contentEditable = 'true';
+        out.spellcheck = false;
+      }
+      if(out.parentElement !== mobileBody) mobileBody.appendChild(out);
+    }
+    window.addEventListener('resize', mountPreview);
+    mountPreview();
+
+    function openSheet(){ sheet.classList.add('open'); }
+    function closeSheetFn(){ sheet.classList.remove('open'); }
+    toggleBtn?.addEventListener('click', ()=>{
+      if(sheet.classList.contains('open')) closeSheetFn(); else openSheet();
+    });
+    closeSheet?.addEventListener('click', ()=>{ closeSheetFn(); });
+    copyMobile?.addEventListener('click', async ()=>{
+      const text = $$('#output').textContent;
+      const ok = await copyText(text);
+      copyMobile.textContent = ok ? 'Copied' : 'Copy failed';
+      setTimeout(()=> copyMobile.textContent = 'Copy', 1400);
+    });
+
+  // keep mobile sheet behavior; open/close via FAB
+
+    // Clicking preview body toggles close unless user is selecting/editing
+    const previewEl = document.getElementById('output');
+    document.getElementById('mobilePreviewBody')?.addEventListener('click', (e)=>{
+      // If clicking on text area itself and selection is collapsed and not focused for typing, close
+      const sel = window.getSelection();
+      const isEditing = document.activeElement === previewEl;
+      if(!isEditing && sel && sel.isCollapsed){ closeSheetFn(); }
+    });
+    // Open sheet the first time we generate content so user can see it
+    let openedOnce = false;
+    const openOnFirstUpdate = ()=>{ if(!openedOnce){ openSheet(); openedOnce = true; } };
+    const origUpdate = updatePreview;
+    updatePreview = function(){ origUpdate(); openOnFirstUpdate(); };
+    // Persist manual edits in preview
+    previewEl.addEventListener('input', ()=>{ save(); });
+    const resetBtn = $$('#resetFab');
+    resetBtn?.addEventListener('click', ()=>{
+      const ok = confirm('Reset current patient data?');
+      if(!ok) return;
+      // Clear current profile data to blank template but keep other profiles
+      const blank = {
+        bed:'', name:'', hashtags:'', cli:'', mx:'', bt:'', pr:'', rr:'', bp:'', o2:'',
+        io: [{in:[], out:[]},{in:[], out:[]}], preview:'', lastSegments:null
+      };
+      if(!currentProfileId){ currentProfileId = `p-${Date.now()}`; }
+      profiles[currentProfileId] = { label: 'Untitled', data: blank };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ current: currentProfileId, profiles }));
+      // Apply blank to UI
+      ['bed','name','hashtags','cli','mx','bt','pr','rr','bp','o2'].forEach(id=> $$("#"+id).value = '');
+      const blocks = document.querySelectorAll('.io-block');
+      blocks.forEach(block=>{
+        block.querySelector('.lines.in').innerHTML='';
+        block.querySelector('.lines.out').innerHTML='';
+        for(let i=0;i<3;i++) addIOLine(block.querySelector('.lines.in'), 'in');
+        for(let i=0;i<3;i++) addIOLine(block.querySelector('.lines.out'), 'out');
+        block.querySelector('.override-in').value = '';
+        block.querySelector('.override-out').value = '';
+      });
+      $$('#output').textContent = '';
+      lastSegments = null;
+      recalcAll();
+      refreshProfileSelect();
+    });
+
+    // Profile actions
+    const profileSelect = $$('#profileSelect');
+    const btnNew = $$('#profileNew');
+    const btnDelete = $$('#profileDelete');
+    profileSelect?.addEventListener('change', ()=>{
+      const id = profileSelect.value;
+      if(!id || !profiles[id]) return;
+      // save current first
+      save();
+      currentProfileId = id;
+      // load selected
+      const selData = profiles[id].data;
+      // apply data to form
+      $$('#bed').value = selData.bed||''; $$('#name').value = selData.name||''; $$('#hashtags').value = selData.hashtags||'';
+      $$('#cli').value = selData.cli||''; if($$('#mx')) $$('#mx').value = selData.mx||''; $$('#bt').value = selData.bt||''; $$('#pr').value = selData.pr||''; $$('#rr').value = selData.rr||''; $$('#bp').value = selData.bp||''; $$('#o2').value = selData.o2||'';
+
+      const blocks = document.querySelectorAll('.io-block');
+      ['morning','afternoon'].forEach((label, idx)=>{
+        const block = blocks[idx];
+        const linesIn = block.querySelector('.lines.in');
+        const linesOut = block.querySelector('.lines.out');
+        linesIn.innerHTML = ''; linesOut.innerHTML = '';
+        const inArr = selData.io?.[idx]?.in || [];
+        const outArr = selData.io?.[idx]?.out || [];
+        const inCount = Math.max(3, inArr.length || 0);
+        const outCount = Math.max(3, outArr.length || 0);
+        for(let i=0;i<inCount;i++){
+          addIOLine(linesIn, 'in');
+          const last = linesIn.lastElementChild;
+          const x = inArr[i] || {kind:'', display:'', amount: ''};
+          last.querySelector('input.kind').value = x.kind||'';
+          if(last.querySelector('input.display')) last.querySelector('input.display').value = x.display||'';
+          last.querySelector('input.amount').value = (x.amount!==undefined && x.amount!==null && x.amount!=='') ? x.amount : '';
+        }
+        for(let i=0;i<outCount;i++){
+          addIOLine(linesOut, 'out');
+          const last = linesOut.lastElementChild;
+          const x = outArr[i] || {kind:'', display:'', amount: ''};
+          last.querySelector('input.kind').value = x.kind||'';
+          if(last.querySelector('input.display')) last.querySelector('input.display').value = x.display||'';
+          last.querySelector('input.amount').value = (x.amount!==undefined && x.amount!==null && x.amount!=='') ? x.amount : '';
+        }
+      });
+      recalcAll();
+      // restore preview and lastSegments for selected profile
+      $$('#output').textContent = selData.preview || '';
+      lastSegments = selData.lastSegments || null;
+      refreshProfileSelect();
+    });
+
+    btnNew?.addEventListener('click', ()=>{
+      const label = prompt('New profile label') || '';
+      const id = `p-${Date.now()}`;
+      // create a blank profile and switch to it
+      const blank = { bed:'', name:'', hashtags:'', cli:'', mx:'', bt:'', pr:'', rr:'', bp:'', o2:'', io:[{in:[], out:[]},{in:[], out:[]}], preview:'', lastSegments:null };
+      profiles[id] = { label: label || 'Untitled', data: blank };
+      currentProfileId = id;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ current: currentProfileId, profiles }));
+      // apply blank to UI
+      ['bed','name','hashtags','cli','mx','bt','pr','rr','bp','o2'].forEach(fid=> { const el = $(`#${fid}`); if(el) el.value = ''; });
+      const blocks = document.querySelectorAll('.io-block');
+      blocks.forEach(block=>{
+        block.querySelector('.lines.in').innerHTML='';
+        block.querySelector('.lines.out').innerHTML='';
+        for(let i=0;i<3;i++) addIOLine(block.querySelector('.lines.in'), 'in');
+        for(let i=0;i<3;i++) addIOLine(block.querySelector('.lines.out'), 'out');
+        const oi = block.querySelector('.override-in'); if(oi) oi.value = '';
+        const oo = block.querySelector('.override-out'); if(oo) oo.value = '';
+      });
+      const out = $$('#output'); if(out) out.textContent = '';
+      lastSegments = null;
+      recalcAll();
+      refreshProfileSelect();
+      const sel = $$('#profileSelect'); if(sel){ sel.value = currentProfileId; }
+    });
+
+    btnDelete?.addEventListener('click', ()=>{
+      if(!currentProfileId) return;
+      const ok = confirm('Delete current profile? This cannot be undone.');
+      if(!ok) return;
+      delete profiles[currentProfileId];
+      const ids = Object.keys(profiles);
+      currentProfileId = ids[0] || null;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ current: currentProfileId, profiles }));
+      // reload selected or clear form
+      if(currentProfileId){
+        profileSelect.value = currentProfileId;
+        profileSelect.dispatchEvent(new Event('change'));
+      } else {
+        localStorage.removeItem('notify-data');
+        location.reload();
+      }
+    });
 
     document.addEventListener('keydown', (e)=>{
       const meta = e.metaKey || (e.ctrlKey && navigator.platform.toLowerCase().includes('win'));
@@ -321,15 +566,11 @@
     document.querySelectorAll('.override-in, .override-out').forEach(inp=>{
       inp.addEventListener('input', ()=>{ recalc(inp.closest('.io-block')); save(); });
     });
-
-    // live toggle: if off, don't auto-update from inputs; manual Generate applies
-    const live = $$('#live');
-    const triggerUpdate = ()=>{ if(live?.checked !== false) updatePreview(); };
+    // trigger live updates on all inputs
+    const triggerUpdate = ()=>{ updatePreview(); };
     document.querySelectorAll('input, textarea').forEach(el=>{
-      if(el.id === 'live') return;
       el.addEventListener('input', triggerUpdate);
     });
-    live?.addEventListener('change', ()=>{ if(live.checked) updatePreview(); });
   }
 
   // init
